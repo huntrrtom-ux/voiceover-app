@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voiceover Jobs</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; background: #0f1115; color: #e8eaed; }
+  header { padding: 18px 24px; border-bottom: 1px solid #2a2f3a; display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .sub { color: #9aa3b2; font-size: 13px; }
+  main { padding: 18px 24px; max-width: 1100px; margin: 0 auto; }
+  .row { background: #171a21; border: 1px solid #262b36; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+  .row .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .title { font-weight: 600; }
+  .meta { color: #9aa3b2; font-size: 12px; }
+  .pill { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+  .queued { background: #2b2f3a; color: #c7ccd6; }
+  .running { background: #243a52; color: #8ec5ff; }
+  .done { background: #1e3a2a; color: #79e0a4; }
+  .error { background: #4a2326; color: #ff9aa0; }
+  audio { width: 100%; margin-top: 10px; }
+  .err { color: #ff9aa0; font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+  button { background: #2b6ef2; color: #fff; border: 0; border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  button.ghost { background: #262b36; }
+  a { color: #8ec5ff; }
+  details { margin-top: 8px; } summary { cursor: pointer; color: #9aa3b2; font-size: 12px; }
+  .log { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #b8c0cf; margin-top: 6px; }
+  .empty { color: #9aa3b2; padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voiceover Jobs</h1>
+  <span class="sub" id="sub">loading…</span>
+  <span style="margin-left:auto"><button class="ghost" onclick="load()">Refresh</button></span>
+</header>
+<main id="list"><div class="empty">Loading…</div></main>
+
+<script>
+const statusOrder = { running: 0, queued: 1, error: 2, done: 3 };
+
+async function load() {
+  const res = await fetch('/dashboard-data');
+  const jobs = await res.json();
+  document.getElementById('sub').textContent = jobs.length + ' job' + (jobs.length === 1 ? '' : 's');
+  const list = document.getElementById('list');
+  if (!jobs.length) { list.innerHTML = '<div class="empty">No jobs yet. The skill will POST here on script approval.</div>'; return; }
+  list.innerHTML = jobs.map(render).join('');
+}
+
+function esc(s) { return (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function render(j) {
+  const audio = j.audio_url ? `<audio controls preload="none" src="${esc(j.audio_url)}"></audio>
+    <div class="meta"><a href="${esc(j.audio_url)}" download>Download ${esc(j.audio_file || 'audio')}</a></div>` : '';
+  const err = j.error ? `<div class="err">⚠ ${esc(j.error)}</div>` : '';
+  const trello = j.trello_card_id ? (j.trello_attached ? ' · Trello ✓' : ' · Trello pending') : '';
+  const logLines = (j.log || []).map(l => esc(l.t.replace('T',' ').slice(0,19) + '  ' + l.message)).join('\n');
+  const retry = (j.status === 'error') ? `<button onclick="retry('${j.job_id}')">Re-run</button>` : '';
+  return `<div class="row">
+    <div class="top">
+      <span class="pill ${j.status}">${j.status}</span>
+      <span class="title">${esc(j.working_title || j.slug || j.job_id)}</span>
+      <span class="meta">${esc(j.channel_id || '')} · ${j.segments} segs${trello}</span>
+      <span style="margin-left:auto" class="meta">${esc((j.updated_at||'').replace('T',' ').slice(0,19))}</span>
+      ${retry}
+    </div>
+    ${audio}
+    ${err}
+    <details><summary>Log</summary><div class="log">${logLines}</div></details>
+  </div>`;
+}
+
+async function retry(id) { await fetch('/dashboard-retry/' + id, { method: 'POST' }); load(); }
+
+load();
+setInterval(load, 4000);
+</script>
+</body>
+</html>

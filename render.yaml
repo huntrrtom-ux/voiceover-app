@@ -1,0 +1,33 @@
+# Render deploy blueprint. Push this repo to GitHub, then in Render: New → Blueprint → pick the repo.
+# Render's Node environment includes ffmpeg, which this app needs for stitching.
+services:
+  - type: web
+    name: voiceover-app
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: API_KEY
+        generateValue: true        # Render generates a strong secret; copy it into the skill config.
+      - key: TTS_PROVIDER
+        value: mock                 # switch to "sixtyninelabs" once the provider is wired.
+      - key: SIXTYNINELABS_BASE_URL
+        sync: false
+      - key: SIXTYNINELABS_API_KEY
+        sync: false
+      - key: SIXTYNINELABS_DEFAULT_VOICE_ID
+        sync: false
+      - key: SIXTYNINELABS_DEFAULT_MODEL
+        sync: false
+      - key: TRELLO_KEY
+        sync: false
+      - key: TRELLO_TOKEN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/../data
+      sizeGB: 1
