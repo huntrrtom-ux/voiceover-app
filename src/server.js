@@ -44,6 +44,11 @@ app.post('/dashboard-retry/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/dashboard-delete/:id', (req, res) => {
+  const ok = store.remove(req.params.id);
+  res.json({ ok });
+});
+
 app.listen(config.port, () => {
   console.log(`voiceover-app listening on :${config.port} (tts provider: ${config.ttsProvider})`);
   if (!config.apiKey) console.log('WARNING: API_KEY is unset — /api is unprotected (ok for local dev only).');

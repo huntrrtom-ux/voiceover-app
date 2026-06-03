@@ -53,6 +53,13 @@ router.post('/jobs/:id/retry', (req, res) => {
   res.json({ job_id: job.job_id, status: 'queued' });
 });
 
+// Delete a job and its audio from the app (Trello attachments are unaffected).
+router.delete('/jobs/:id', (req, res) => {
+  const ok = store.remove(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true, deleted: req.params.id });
+});
+
 function publicView(job) {
   return {
     job_id: job.job_id,

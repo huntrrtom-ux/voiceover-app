@@ -78,4 +78,24 @@ function log(id, message) {
   saveAll(jobs);
 }
 
-module.exports = { create, get, list, update, log, JOBS_FILE };
+function remove(id) {
+  const jobs = loadAll();
+  if (!jobs[id]) return false;
+  const job = jobs[id];
+  try {
+    if (job.audio_file) {
+      const final = path.join(paths.AUDIO_DIR, id + '__' + job.audio_file);
+      if (fs.existsSync(final)) fs.rmSync(final, { force: true });
+    }
+    const workDir = path.join(paths.AUDIO_DIR, id);
+    if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
+    for (const f of fs.readdirSync(paths.AUDIO_DIR)) {
+      if (f.startsWith(id + '__')) fs.rmSync(path.join(paths.AUDIO_DIR, f), { force: true });
+    }
+  } catch (e) { /* still remove the record even if a file is already gone */ }
+  delete jobs[id];
+  saveAll(jobs);
+  return true;
+}
+
+module.exports = { create, get, list, update, log, remove, JOBS_FILE };

@@ -59,6 +59,7 @@ function render(j) {
   const trello = j.trello_card_id ? (j.trello_attached ? ' · Trello ✓' : ' · Trello pending') : '';
   const logLines = (j.log || []).map(l => esc(l.t.replace('T',' ').slice(0,19) + '  ' + l.message)).join('\n');
   const retry = (j.status === 'error') ? `<button onclick="retry('${j.job_id}')">Re-run</button>` : '';
+  const delBtn = `<button class="ghost" onclick="delJob('${j.job_id}')">Delete</button>`;
   return `<div class="row">
     <div class="top">
       <span class="pill ${j.status}">${j.status}</span>
@@ -66,6 +67,7 @@ function render(j) {
       <span class="meta">${esc(j.channel_id || '')} · ${j.segments} segs${trello}</span>
       <span style="margin-left:auto" class="meta">${esc((j.updated_at||'').replace('T',' ').slice(0,19))}</span>
       ${retry}
+      ${delBtn}
     </div>
     ${audio}
     ${err}
@@ -74,6 +76,7 @@ function render(j) {
 }
 
 async function retry(id) { await fetch('/dashboard-retry/' + id, { method: 'POST' }); load(); }
+async function delJob(id) { if (!confirm('Delete this voiceover from the app? Audio already attached to Trello is NOT affected.')) return; await fetch('/dashboard-delete/' + id, { method: 'POST' }); load(); }
 
 load();
 setInterval(load, 4000);
