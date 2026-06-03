@@ -88,6 +88,7 @@ async function process(jobId) {
             label: t.label,
             title: t.card_title || payload.working_title,
             description: t.description,
+            thumbnailPrompt: t.thumbnail_prompt,
             filePath: finalPath,
             fileName: finalName,
           })
