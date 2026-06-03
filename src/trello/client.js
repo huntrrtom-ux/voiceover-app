@@ -129,14 +129,18 @@ async function placeOnCard({ boardId, listId, listName, label, title, descriptio
   }
   await ensureLabelOnCard(card.id, labelId);
   if (description != null && description !== '') await setCardDescription(card.id, description);
-  await attachToCard({ cardId: card.id, filePath, fileName });
 
-  // Thumbnail prompt -> a comment titled "Thumbnail Prompt:". Skip if one already exists (re-runs).
+  // Thumbnail prompt -> a comment titled "Thumbnail Prompt:". Done BEFORE the audio attach so a large
+  // file (or any attach error) can never cost us the comment. Skipped if one already exists (re-runs).
   if (thumbnailPrompt && String(thumbnailPrompt).trim()) {
     const existing = await listCommentTexts(card.id).catch(() => []);
     const already = existing.some((t) => t.trim().startsWith(THUMB_PREFIX));
     if (!already) await addComment(card.id, `${THUMB_PREFIX}\n${String(thumbnailPrompt).trim()}`);
   }
+
+  // Attach the stitched audio last — this is the step most likely to fail on size, and by now the
+  // label, description, and comment are already safely on the card.
+  await attachToCard({ cardId: card.id, filePath, fileName });
   return card.id;
 }
 
