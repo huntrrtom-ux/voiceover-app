@@ -1,3 +1,7 @@
+# Railway / Nixpacks build config.
+# Adds ffmpeg (required for audio stitching) on top of the auto-detected Node.js setup.
+# Railway sets $PORT automatically; the app reads it via process.env.PORT.
+
 [phases.setup]
 aptPkgs = ["ffmpeg"]
 

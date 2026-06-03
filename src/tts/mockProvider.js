@@ -4,10 +4,11 @@
 // 69labs account. A soft low tone marks where each segment is, so boundaries are audible.
 
 const { execFile } = require('child_process');
+const FFMPEG = require('../audio/ffmpegPath');
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
-    execFile('ffmpeg', args, { maxBuffer: 1024 * 1024 * 32 }, (err, _stdout, stderr) => {
+    execFile(FFMPEG, args, { maxBuffer: 1024 * 1024 * 32 }, (err, _stdout, stderr) => {
       if (err) return reject(new Error(stderr ? stderr.split('\n').slice(-3).join(' ') : err.message));
       resolve();
     });

@@ -5,10 +5,11 @@
 // works no matter what format each segment came back in (mock mp3 today, 69labs audio later).
 
 const { execFile } = require('child_process');
+const FFMPEG = require('./ffmpegPath');
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
-    execFile('ffmpeg', args, { maxBuffer: 1024 * 1024 * 64 }, (err, _stdout, stderr) => {
+    execFile(FFMPEG, args, { maxBuffer: 1024 * 1024 * 64 }, (err, _stdout, stderr) => {
       if (err) return reject(new Error(stderr ? stderr.split('\n').slice(-4).join(' ') : err.message));
       resolve();
     });
