@@ -1,8 +1,7 @@
 'use strict';
 // Stitch ordered segments into one mp3, inserting a pause before each segment after the first.
-// Pause length depends on the boundary: after the hook => pauses.after_hook; between chapters
-// => pauses.between_chapters. Uses ffmpeg's concat filter with per-input normalization, so it
-// works no matter what format each segment came back in (mock mp3 today, 69labs audio later).
+// Prefers an explicit per-segment pause_before (set by the skill per the channel's voiceover
+// config); otherwise falls back to a kind-based default. ffmpeg concat with per-input normalization.
 
 const { execFile } = require('child_process');
 const FFMPEG = require('./ffmpegPath');
@@ -24,8 +23,13 @@ function buildPlan(segments, pauses) {
 
   segments.forEach((seg, i) => {
     if (i > 0) {
-      const prev = segments[i - 1];
-      const dur = prev.kind === 'hook' ? afterHook : betweenChapters;
+      let dur;
+      if (typeof seg.pause_before === 'number') {
+        dur = seg.pause_before;
+      } else {
+        const prev = segments[i - 1];
+        dur = prev.kind === 'hook' ? afterHook : betweenChapters;
+      }
       if (dur > 0) plan.push({ type: 'silence', dur });
     }
     plan.push({ type: 'file', path: seg.file });
@@ -49,7 +53,6 @@ async function stitch({ segments, pauses = {}, outPath }) {
     } else {
       inputArgs.push('-f', 'lavfi', '-t', String(item.dur), '-i', 'anullsrc=r=44100:cl=mono');
     }
-    // Normalize every input to the same sr/layout/format so concat is safe across providers.
     filterParts.push(`[${idx}:a]aformat=sample_rates=44100:channel_layouts=mono[a${idx}]`);
     concatLabels.push(`[a${idx}]`);
   });
