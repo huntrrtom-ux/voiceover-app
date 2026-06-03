@@ -8,6 +8,18 @@ const router = express.Router();
 function validatePayload(body) {
   const errors = [];
   if (!body || typeof body !== 'object') return ['body must be JSON'];
+
+  // Description-only update job (timestamped channels): no audio, just sets the card description on
+  // an existing card. Requires a trello target + description, but no segments.
+  if (body.description_only) {
+    const t = body.trello || {};
+    if (!t.board_id) errors.push('description_only: trello.board_id is required');
+    if (!t.label) errors.push('description_only: trello.label is required');
+    if (!t.card_title && !body.working_title) errors.push('description_only: trello.card_title (or working_title) is required');
+    if (typeof t.description !== 'string' || !t.description.trim()) errors.push('description_only: trello.description is required');
+    return errors;
+  }
+
   if (!body.slug) errors.push('slug is required');
   if (!body.working_title) errors.push('working_title is required');
   if (!Array.isArray(body.segments) || body.segments.length === 0) {

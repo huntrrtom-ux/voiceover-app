@@ -140,7 +140,18 @@ async function placeOnCard({ boardId, listId, listName, label, title, descriptio
   return card.id;
 }
 
+// Update only the description on an already-created card (used by timestamped-description
+// channels, whose description is generated after the audio renders). Finds the card by
+// label + title; throws if it doesn't exist yet (the voiceover job creates it first).
+async function setDescriptionByCard({ boardId, label, title, description }) {
+  const labelId = label ? await resolveLabelId(boardId, label) : null;
+  const card = await findCard(boardId, labelId, title);
+  if (!card) throw new Error(`Trello: no card titled "${title}" found to update (label ${label})`);
+  await setCardDescription(card.id, description || '');
+  return card.id;
+}
+
 module.exports = {
-  placeOnCard, attachToCard, setCardDescription, addComment, listCommentTexts,
+  placeOnCard, attachToCard, setCardDescription, setDescriptionByCard, addComment, listCommentTexts,
   resolveLabelId, resolveListId, findCard, createCard, ensureLabelOnCard,
 };

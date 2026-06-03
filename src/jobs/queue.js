@@ -38,6 +38,35 @@ async function process(jobId) {
   store.log(jobId, 'job started');
 
   const payload = job.payload;
+
+  // Description-only update (timestamped channels): no audio — just set the card description on the
+  // card the original voiceover job already created.
+  if (payload.description_only) {
+    try {
+      const t = payload.trello || {};
+      if (!config.trello.enabled) {
+        store.log(jobId, 'trello skipped: TRELLO_KEY/TRELLO_TOKEN not set');
+      } else {
+        const cardId = await withRetry(jobId, 'trello-desc', () =>
+          trello.setDescriptionByCard({
+            boardId: t.board_id,
+            label: t.label,
+            title: t.card_title || payload.working_title,
+            description: t.description,
+          })
+        );
+        store.update(jobId, { trello_card_id: cardId });
+        store.log(jobId, 'updated description on Trello card ' + cardId);
+      }
+      store.update(jobId, { status: 'done', error: null });
+      store.log(jobId, 'job done');
+    } catch (err) {
+      store.update(jobId, { status: 'error', error: err.message });
+      store.log(jobId, 'JOB FAILED: ' + err.message);
+    }
+    return;
+  }
+
   const provider = getProvider();
   const workDir = path.join(config.paths.AUDIO_DIR, jobId);
   fs.mkdirSync(workDir, { recursive: true });
