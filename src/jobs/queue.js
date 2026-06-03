@@ -74,8 +74,28 @@ async function process(jobId) {
     store.update(jobId, { audio_file: finalName, audio_url: audioUrl });
     store.log(jobId, 'stitched -> ' + finalName);
 
-    // 3) Attach to Trello card (retry). Only if a card id was provided and creds exist.
-    if (payload.trello_card_id) {
+    // 3) Trello (retry). Prefer board+label (web app owns the card); else a direct card id; else skip.
+    const t = payload.trello;
+    if (t && t.board_id && t.label) {
+      if (!config.trello.enabled) {
+        store.log(jobId, 'trello skipped: TRELLO_KEY/TRELLO_TOKEN not set');
+      } else {
+        const cardId = await withRetry(jobId, 'trello', () =>
+          trello.placeOnCard({
+            boardId: t.board_id,
+            listId: t.list_id,
+            listName: t.list_name,
+            label: t.label,
+            title: t.card_title || payload.working_title,
+            description: t.description,
+            filePath: finalPath,
+            fileName: finalName,
+          })
+        );
+        store.update(jobId, { trello_attached: true, trello_card_id: cardId });
+        store.log(jobId, 'placed on Trello card ' + cardId);
+      }
+    } else if (payload.trello_card_id) {
       if (!config.trello.enabled) {
         store.log(jobId, 'trello skipped: TRELLO_KEY/TRELLO_TOKEN not set');
       } else {
@@ -86,7 +106,7 @@ async function process(jobId) {
         store.log(jobId, 'attached to Trello card ' + payload.trello_card_id);
       }
     } else {
-      store.log(jobId, 'no trello_card_id provided; skipping attach');
+      store.log(jobId, 'no trello target provided; skipping attach');
     }
 
     store.update(jobId, { status: 'done', error: null });
