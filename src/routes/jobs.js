@@ -67,9 +67,41 @@ router.post('/jobs/:id/retry', (req, res) => {
 
 // Delete a job and its audio from the app (Trello attachments are unaffected).
 router.delete('/jobs/:id', (req, res) => {
+  queue.cancel(req.params.id);
   const ok = store.remove(req.params.id);
   if (!ok) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true, deleted: req.params.id });
+});
+
+// Redo = delete this job AND record a remake request so its idea is re-added to the channel's
+// local ideas-queue (the watcher does the local write-back). Use when a script came out wrong.
+router.post('/jobs/:id/redo', (req, res) => {
+  const job = store.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'not found' });
+  const remake = store.addRemake({
+    channel_id: job.payload?.channel_id,
+    working_title: job.payload?.working_title,
+    slug: job.payload?.slug,
+  });
+  queue.cancel(job.job_id);
+  store.remove(job.job_id);
+  res.json({ ok: true, deleted: job.job_id, remake });
+});
+
+// Clear all finished (done + error) jobs and their audio. Queued/running are untouched.
+router.post('/jobs/clear-finished', (_req, res) => res.json({ ok: true, removed: store.clearFinished() }));
+
+// ---- Global production control ----
+router.get('/control', (_req, res) => res.json(store.getControl()));
+router.post('/control/pause', (_req, res) => res.json(store.setPaused(true)));
+router.post('/control/resume', (_req, res) => { const c = store.setPaused(false); queue.resume(); res.json(c); });
+
+// ---- Remake queue (the local watcher drains this and writes back to the ideas-queue files) ----
+router.get('/remakes', (_req, res) => res.json(store.listRemakes()));
+router.post('/remakes/:id/ack', (req, res) => {
+  const ok = store.ackRemake(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 });
 
 function publicView(job) {
@@ -79,7 +111,8 @@ function publicView(job) {
     channel_id: job.payload?.channel_id || null,
     working_title: job.payload?.working_title || null,
     slug: job.payload?.slug || null,
-    segments: job.payload?.segments?.length || 0,
+    segments: (job.segment_count != null ? job.segment_count : (job.payload?.segments?.length || 0)),
+    chars: (job.char_count != null ? job.char_count : store.countChars(job.payload)),
     created_at: job.created_at,
     updated_at: job.updated_at,
     audio_file: job.audio_file,
@@ -92,3 +125,4 @@ function publicView(job) {
 }
 
 module.exports = router;
+module.exports.publicView = publicView;

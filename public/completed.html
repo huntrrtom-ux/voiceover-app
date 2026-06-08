@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Completed</title>
+<style>
+  :root{
+    --glass: rgba(255,255,255,0.06);
+    --stroke: rgba(255,255,255,0.14);
+    --hair: rgba(255,255,255,0.08);
+    --text:#eaf0ff; --muted:#9fb0d0; --dim:#6f7fa0;
+    --done:#52e08a; --error:#ff6b88;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--text);min-height:100%;background:#070b18;
+    background-image:
+      radial-gradient(1100px 700px at 12% -10%, rgba(86,120,255,0.18), transparent 60%),
+      radial-gradient(800px 800px at 80% 120%, rgba(82,224,138,0.12), transparent 60%);
+    background-attachment:fixed;padding:24px clamp(12px,4vw,44px) 60px;
+  }
+  .bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+  h1{font-size:20px;font-weight:650;margin:0}
+  .sub{color:var(--muted);font-size:12.5px}
+  a.nav{color:#7aa2ff;text-decoration:none;font-size:12.5px;font-weight:600}
+  .spacer{flex:1}
+  .stat{display:flex;gap:9px;font-size:12px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;border:1px solid var(--stroke);background:var(--glass)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .clearall{border:1px solid rgba(255,107,136,.45);background:rgba(255,107,136,.12);color:#ffd7df;
+    font-size:13px;font-weight:650;padding:10px 16px;border-radius:12px;cursor:pointer}
+  .clearall:hover{background:rgba(255,107,136,.22)}
+  .clearall:disabled{opacity:.4;cursor:not-allowed}
+  .heads{display:flex;align-items:center;gap:14px;padding:0 16px 7px;font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+  .heads .lead{width:26px}.heads .chan{width:148px}.heads .title{flex:1}
+  .heads .seg{width:58px;text-align:right}.heads .chars{width:62px;text-align:right}.heads .st{width:150px;text-align:right;display:block}
+  .panel{background:var(--glass);border:1px solid var(--stroke);border-radius:14px;
+    backdrop-filter:blur(20px) saturate(140%);-webkit-backdrop-filter:blur(20px) saturate(140%);overflow:hidden}
+  .row{display:flex;align-items:center;gap:14px;padding:0 16px;height:46px;border-bottom:1px solid var(--hair);font-size:13px}
+  .row:last-child{border-bottom:none}
+  .row.err{box-shadow:inset 3px 0 0 var(--error)}
+  .row.done{box-shadow:inset 3px 0 0 var(--done)}
+  .lead{width:26px;display:flex;justify-content:center;flex:none}
+  .chan{width:148px;flex:none;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .col{flex:none;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12.5px}
+  .seg{width:58px}.chars{width:62px}
+  .st{width:150px;flex:none;text-align:right;font-size:12px;font-weight:600;display:flex;align-items:center;gap:10px;justify-content:flex-end}
+  .st .label{flex:1;text-align:right}
+  .x{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--text);font-size:12px;font-weight:600;padding:5px 10px;border-radius:8px;cursor:pointer}
+  .x:hover{background:rgba(255,107,136,.20);border-color:rgba(255,107,136,.55)}
+  .empty{color:var(--dim);font-size:13px;padding:18px}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);padding:10px 17px;border-radius:11px;font-size:13px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;background:rgba(20,28,48,.92);border:1px solid var(--stroke)}
+  .toast.show{opacity:1}
+  @media (max-width:720px){ .chan{width:90px} .heads .chan{width:90px} }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div>
+      <h1>Completed</h1>
+      <div class="sub">Finished &amp; errored jobs · <a class="nav" href="/queue.html">← back to queue</a></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="stat" id="stat"></div>
+    <button class="clearall" id="clearall" onclick="clearAll()">Clear all completed</button>
+  </div>
+
+  <div class="heads"><span class="lead"></span><span class="chan">channel</span><span class="title">title</span><span class="seg">seg</span><span class="chars">chars</span><span class="st">status</span></div>
+  <div class="panel" id="list"></div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+function fmtChars(n){ if(n==null) return '—'; return n>=1000 ? Math.round(n/1000)+'k' : String(n); }
+function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function dot(c){ return `<span class="dot" style="background:${c}"></span>`; }
+
+function row(j){
+  const isErr=j.status==='error';
+  return `<div class="row ${isErr?'err':'done'}">
+    <span class="lead">${dot(isErr?'var(--error)':'var(--done)')}</span>
+    <span class="chan">${esc(j.channel_id||'—')}</span>
+    <span class="title" title="${esc(j.working_title||'')}">${esc(j.working_title||j.slug||j.job_id)}</span>
+    <span class="col seg">${j.segments??'—'}</span>
+    <span class="col chars">${fmtChars(j.chars)}</span>
+    <span class="st">
+      <span class="label" style="color:${isErr?'var(--error)':'var(--done)'}">${isErr?'error':'done'+(j.trello_attached?' · trello ✓':'')}</span>
+      <button class="x" title="Remove this one" onclick="del('${j.job_id}',this)">✕</button>
+    </span>
+  </div>`;
+}
+
+async function load(){
+  let d; try{ d=await fetch('/queue-data',{cache:'no-store'}).then(r=>r.json()); }catch(e){ return; }
+  const fin=(d.jobs||[]).filter(j=>j.status==='done'||j.status==='error');
+  const done=fin.filter(j=>j.status==='done').length, err=fin.filter(j=>j.status==='error').length;
+  document.getElementById('list').innerHTML = fin.map(row).join('') || '<div class="empty">Nothing completed yet.</div>';
+  document.getElementById('stat').innerHTML =
+    `<span class="pill">${dot('var(--done)')}<b>${done}</b>&nbsp;done</span>`+
+    `<span class="pill">${dot('var(--error)')}<b>${err}</b>&nbsp;errored</span>`;
+  document.getElementById('clearall').disabled = fin.length===0;
+}
+async function del(id,b){ b.disabled=true; await fetch('/dashboard-delete/'+id,{method:'POST'}); toast('Removed'); load(); }
+async function clearAll(){
+  if(!confirm('Clear ALL completed jobs (done + errored) and their audio? This frees space. Queued/rendering jobs and Trello cards are untouched.')) return;
+  const r=await fetch('/dashboard-clear-finished',{method:'POST'}).then(r=>r.json()).catch(()=>({removed:0}));
+  toast('Cleared '+(r.removed||0)+' completed job'+(r.removed===1?'':'s')); load();
+}
+let tt; function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('show'); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('show'),2000); }
+load(); setInterval(load,5000);
+</script>
+</body>
+</html>

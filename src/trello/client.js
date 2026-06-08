@@ -51,11 +51,36 @@ async function findCard(boardId, labelId, title) {
   }) || null;
 }
 
-async function createCard(listId, title, labelId) {
+// A card's list position is set from its due date (epoch milliseconds) so the list always reads
+// top-to-bottom in chronological order: an earlier deadline gets a smaller pos and sits higher.
+// Returns null when there's no usable due date (Trello then keeps its default positioning).
+function posFromDue(due) {
+  if (!due) return null;
+  const ms = Date.parse(due);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+async function createCard(listId, title, labelId, opts = {}) {
   if (!listId) throw new Error('Trello: no list to create the card in (set trello.list_name or list_id)');
   const params = new URLSearchParams({ idList: listId, name: title });
   if (labelId) params.set('idLabels', labelId);
+  if (opts.due) params.set('due', opts.due);             // ISO 8601 due date+time (UTC)
+  const pos = posFromDue(opts.due);
+  if (pos != null) params.set('pos', String(pos));        // chronological placement in the list
   return tjson(`${API}/cards?${params.toString()}&${auth()}`, { method: 'POST' });
+}
+
+// Idempotently set a card's due date (and re-position it chronologically). Safe on re-runs.
+async function ensureDueOnCard(cardId, due) {
+  if (!due) return;
+  const body = { due };
+  const pos = posFromDue(due);
+  if (pos != null) body.pos = pos;
+  await tjson(`${API}/cards/${cardId}?${auth()}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 async function ensureLabelOnCard(cardId, labelId) {
@@ -105,8 +130,17 @@ async function addComment(cardId, text) {
   return tjson(`${API}/cards/${cardId}/actions/comments?${params.toString()}&${auth()}`, { method: 'POST' });
 }
 
+async function listAttachmentNames(cardId) {
+  const a = await tjson(`${API}/cards/${cardId}/attachments?fields=name&${auth()}`).catch(() => []);
+  return (Array.isArray(a) ? a : []).map((x) => (x.name || ''));
+}
+
 async function attachToCard({ cardId, filePath, fileName }) {
   if (!cardId) throw new Error('attachToCard: missing cardId');
+  // Idempotency: if an attachment with this exact filename is already on the card, skip. This stops a
+  // re-run of the same video (same output_name) from stacking a duplicate audio file on the card.
+  const existing = await listAttachmentNames(cardId);
+  if (existing.includes(fileName)) return { skipped: true, reason: 'attachment already present' };
   const buf = fs.readFileSync(filePath);
   const fd = new FormData();
   fd.append('file', new Blob([buf], { type: 'audio/mpeg' }), fileName);
@@ -120,14 +154,16 @@ const THUMB_PREFIX = 'Thumbnail Prompt:';
 
 // High-level: place the finished audio + description (+ optional thumbnail-prompt comment) on the
 // right card. Returns the card id. Accepts listId or listName (resolved on demand for creation).
-async function placeOnCard({ boardId, listId, listName, label, title, description, thumbnailPrompt, filePath, fileName }) {
+async function placeOnCard({ boardId, listId, listName, label, title, description, thumbnailPrompt, ebookComment, ebookUrl, due, filePath, fileName }) {
   const labelId = label ? await resolveLabelId(boardId, label) : null;
   let card = await findCard(boardId, labelId, title);
   if (!card) {
     const targetList = listId || (listName ? await resolveListId(boardId, listName) : null);
-    card = await createCard(targetList, title, labelId);
+    card = await createCard(targetList, title, labelId, { due });
   }
   await ensureLabelOnCard(card.id, labelId);
+  // Set/refresh the deadline and chronological position (also covers cards reused on a re-run).
+  if (due) await ensureDueOnCard(card.id, due);
   if (description != null && description !== '') await setCardDescription(card.id, description);
 
   // Thumbnail prompt -> a comment titled "Thumbnail Prompt:". Done BEFORE the audio attach so a large
@@ -138,8 +174,18 @@ async function placeOnCard({ boardId, listId, listName, label, title, descriptio
     if (!already) await addComment(card.id, `${THUMB_PREFIX}\n${String(thumbnailPrompt).trim()}`);
   }
 
+  // E-book CTA -> a one-line comment in the channel's voice, ending in the store URL. Posted AFTER the
+  // thumbnail comment so it is the NEWEST comment and therefore sits at the TOP of the comments section
+  // (Trello orders comments newest-first). Deduped by the store URL so re-runs never repost it.
+  if (ebookComment && String(ebookComment).trim()) {
+    const existing = await listCommentTexts(card.id).catch(() => []);
+    const marker = (ebookUrl && String(ebookUrl).trim()) || String(ebookComment).trim();
+    const already = existing.some((t) => t.includes(marker));
+    if (!already) await addComment(card.id, String(ebookComment).trim());
+  }
+
   // Attach the stitched audio last — this is the step most likely to fail on size, and by now the
-  // label, description, and comment are already safely on the card.
+  // label, description, and comments are already safely on the card.
   await attachToCard({ cardId: card.id, filePath, fileName });
   return card.id;
 }
@@ -147,15 +193,16 @@ async function placeOnCard({ boardId, listId, listName, label, title, descriptio
 // Update only the description on an already-created card (used by timestamped-description
 // channels, whose description is generated after the audio renders). Finds the card by
 // label + title; throws if it doesn't exist yet (the voiceover job creates it first).
-async function setDescriptionByCard({ boardId, label, title, description }) {
+async function setDescriptionByCard({ boardId, label, title, description, due }) {
   const labelId = label ? await resolveLabelId(boardId, label) : null;
   const card = await findCard(boardId, labelId, title);
   if (!card) throw new Error(`Trello: no card titled "${title}" found to update (label ${label})`);
+  if (due) await ensureDueOnCard(card.id, due);
   await setCardDescription(card.id, description || '');
   return card.id;
 }
 
 module.exports = {
   placeOnCard, attachToCard, setCardDescription, setDescriptionByCard, addComment, listCommentTexts,
-  resolveLabelId, resolveListId, findCard, createCard, ensureLabelOnCard,
+  resolveLabelId, resolveListId, findCard, createCard, ensureLabelOnCard, ensureDueOnCard, posFromDue,
 };

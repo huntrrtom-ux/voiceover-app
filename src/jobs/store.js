@@ -7,6 +7,13 @@ const crypto = require('crypto');
 const { paths } = require('../config');
 
 const JOBS_FILE = path.join(paths.DATA_DIR, 'jobs.json');
+const CONTROL_FILE = path.join(paths.DATA_DIR, 'control.json');
+const REMAKES_FILE = path.join(paths.DATA_DIR, 'remakes.json');
+
+function countChars(payload) {
+  const segs = (payload && payload.segments) || [];
+  return segs.reduce((n, s) => n + (s && typeof s.text === 'string' ? s.text.length : 0), 0);
+}
 
 function ensureDirs() {
   fs.mkdirSync(paths.DATA_DIR, { recursive: true });
@@ -46,6 +53,8 @@ function create(payload) {
     audio_file: null,
     audio_url: null,
     trello_attached: false,
+    segment_count: ((payload && payload.segments) || []).length,
+    char_count: countChars(payload),
     log: [],
     payload,                      // the original handoff payload
   };
@@ -98,4 +107,68 @@ function remove(id) {
   return true;
 }
 
-module.exports = { create, get, list, update, log, remove, JOBS_FILE };
+// Clear all FINISHED jobs (done + error) and their audio files. Never removes queued/running ones.
+function clearFinished() {
+  const jobs = loadAll();
+  let removed = 0;
+  for (const id of Object.keys(jobs)) {
+    const s = jobs[id].status;
+    if (s === 'done' || s === 'error') { if (remove(id)) removed++; }
+  }
+  return removed;
+}
+
+// ---- Global production control (pause flag), persisted so a restart remembers it ----
+function getControl() {
+  ensureDirs();
+  try { return JSON.parse(fs.readFileSync(CONTROL_FILE, 'utf8')); }
+  catch { return { paused: false }; }
+}
+function setPaused(paused) {
+  ensureDirs();
+  const c = { paused: !!paused, updated_at: new Date().toISOString() };
+  const tmp = CONTROL_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(c, null, 2));
+  fs.renameSync(tmp, CONTROL_FILE);
+  return c;
+}
+
+// ---- Remake requests: a deleted job whose idea should be re-added to its local ideas-queue.
+// The cloud app can't write the local file, so it records the request here and the watcher
+// (which has local file access) drains it and appends the title back into the queue. ----
+function loadRemakes() {
+  ensureDirs();
+  try { return JSON.parse(fs.readFileSync(REMAKES_FILE, 'utf8')); }
+  catch { return {}; }
+}
+function saveRemakes(r) {
+  ensureDirs();
+  const tmp = REMAKES_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(r, null, 2));
+  fs.renameSync(tmp, REMAKES_FILE);
+}
+function addRemake({ channel_id, working_title, slug }) {
+  const r = loadRemakes();
+  const id = 'rmk_' + crypto.randomBytes(5).toString('hex');
+  r[id] = { id, channel_id: channel_id || null, working_title: working_title || null,
+            slug: slug || null, created_at: new Date().toISOString(), acked: false };
+  saveRemakes(r);
+  return r[id];
+}
+function listRemakes({ includeAcked = false } = {}) {
+  return Object.values(loadRemakes())
+    .filter((x) => includeAcked || !x.acked)
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+}
+function ackRemake(id) {
+  const r = loadRemakes();
+  if (!r[id]) return false;
+  r[id].acked = true;
+  saveRemakes(r);
+  return true;
+}
+
+module.exports = {
+  create, get, list, update, log, remove, clearFinished, JOBS_FILE, countChars,
+  getControl, setPaused, addRemake, listRemakes, ackRemake,
+};

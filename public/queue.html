@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Production Queue</title>
+<style>
+  :root{
+    --glass: rgba(255,255,255,0.06);
+    --stroke: rgba(255,255,255,0.14);
+    --hair: rgba(255,255,255,0.08);
+    --text:#eaf0ff; --muted:#9fb0d0; --dim:#6f7fa0;
+    --running:#37e0c8; --queued:#7aa2ff; --done:#52e08a; --error:#ff6b88; --warn:#ffcf5c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--text);min-height:100%;background:#070b18;
+    background-image:
+      radial-gradient(1100px 700px at 12% -10%, rgba(86,120,255,0.22), transparent 60%),
+      radial-gradient(900px 600px at 100% 0%, rgba(55,224,200,0.16), transparent 55%),
+      radial-gradient(800px 800px at 50% 125%, rgba(160,90,255,0.16), transparent 60%);
+    background-attachment:fixed;
+    padding:24px clamp(12px,4vw,44px) 60px;
+  }
+  .bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  h1{font-size:20px;font-weight:650;margin:0}
+  .sub{color:var(--muted);font-size:12.5px}
+  .spacer{flex:1}
+  a.nav{color:var(--queued);text-decoration:none;font-size:12.5px;font-weight:600}
+  .stat{display:flex;gap:9px;flex-wrap:wrap;font-size:12px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
+    border:1px solid var(--stroke);background:var(--glass)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .pausebtn{border:none;cursor:pointer;color:#06121f;font-weight:700;font-size:14px;padding:11px 18px;
+    border-radius:13px;display:flex;align-items:center;gap:9px;background:#7ef0d8;transition:filter .12s}
+  .pausebtn:hover{filter:brightness(1.06)}
+  .pausebtn.paused{background:#ffd66b}
+
+  .banner{margin:0 0 16px;padding:11px 16px;border-radius:12px;display:none;align-items:center;gap:10px;
+    background:rgba(255,207,92,.12);border:1px solid rgba(255,207,92,.4);color:#ffe6a8;font-weight:600;font-size:13px}
+  .banner.show{display:flex}
+
+  .section{margin-top:22px}
+  .shead{display:flex;align-items:center;gap:12px;margin:0 2px 8px}
+  .shead .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px}
+  .shead .count{font-size:11px;color:var(--dim)}
+  .clearbtn{margin-left:auto;border:1px solid rgba(255,107,136,.4);background:rgba(255,107,136,.10);
+    color:#ffd7df;font-size:12px;font-weight:600;padding:6px 12px;border-radius:9px;cursor:pointer}
+  .clearbtn:hover{background:rgba(255,107,136,.20)}
+
+  .panel{background:var(--glass);border:1px solid var(--stroke);border-radius:14px;
+    backdrop-filter:blur(20px) saturate(140%);-webkit-backdrop-filter:blur(20px) saturate(140%);overflow:hidden}
+  .row{display:flex;align-items:center;gap:14px;padding:0 16px;height:46px;border-bottom:1px solid var(--hair);
+    font-size:13px;position:relative}
+  .row:last-child{border-bottom:none}
+  .row.run{background:rgba(55,224,200,.06);box-shadow:inset 3px 0 0 var(--running)}
+  .row.err{box-shadow:inset 3px 0 0 var(--error)}
+  .lead{width:26px;display:flex;align-items:center;justify-content:center;flex:none}
+  .num{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .chan{width:148px;flex:none;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+  .col{flex:none;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12.5px}
+  .col .u{color:var(--dim);font-size:11px}
+  .seg{width:58px}
+  .chars{width:62px}
+  .chars.short{color:#ffb3c0}
+  .stat-txt{width:140px;flex:none;text-align:right;font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px;justify-content:flex-end}
+  .acts{width:140px;flex:none;display:flex;gap:7px;justify-content:flex-end}
+  .btn{border:1px solid var(--stroke);background:rgba(255,255,255,.05);color:var(--text);font-size:12px;
+    font-weight:600;padding:6px 11px;border-radius:9px;cursor:pointer;transition:all .12s}
+  .btn:hover{background:rgba(255,255,255,.13)}
+  .btn.danger:hover{background:rgba(255,107,136,.20);border-color:rgba(255,107,136,.55)}
+  .btn.redo:hover{background:rgba(122,162,255,.20);border-color:rgba(122,162,255,.55)}
+  .empty{color:var(--dim);font-size:13px;padding:16px}
+  .heads{display:flex;align-items:center;gap:14px;padding:0 16px 7px;font-size:10.5px;color:var(--dim);
+    text-transform:uppercase;letter-spacing:1px}
+  .heads .lead{width:26px}.heads .chan{width:148px}.heads .title{flex:1}
+  .heads .seg{width:58px;text-align:right}.heads .chars{width:62px;text-align:right}.heads .acts{width:140px;text-align:right;display:block}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);padding:10px 17px;border-radius:11px;
+    font-size:13px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;
+    background:rgba(20,28,48,.92);border:1px solid var(--stroke)}
+  .toast.show{opacity:1}
+  @media (max-width:720px){ .chan{width:90px} .acts,.stat-txt{width:auto} .heads .chan{width:90px} }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div>
+      <h1>Production Queue</h1>
+      <div class="sub">Every handoff in the pipeline · <a class="nav" href="/completed.html">completed →</a> · <a class="nav" href="/">classic dashboard →</a></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="stat" id="stat"></div>
+    <button class="pausebtn" id="pause" onclick="togglePause()">⏸ Pause all</button>
+  </div>
+
+  <div class="banner" id="banner">⏸ Production is PAUSED — queued jobs are held. Resume to start rendering again.</div>
+
+  <div class="section">
+    <div class="shead"><span class="lbl">Rendering now</span></div>
+    <div class="panel" id="running"></div>
+  </div>
+
+  <div class="section">
+    <div class="shead"><span class="lbl">Up next — in order</span><span class="count" id="qcount"></span></div>
+    <div class="heads"><span class="lead">#</span><span class="chan">channel</span><span class="title">title</span><span class="seg">seg</span><span class="chars">chars</span><span class="acts">actions</span></div>
+    <div class="panel" id="queued"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const SHORT_WARN = 5000;
+let paused = false;
+function fmtChars(n){ if(n==null) return '—'; return n>=1000 ? Math.round(n/1000)+'k' : String(n); }
+function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function dot(c){ return `<span class="dot" style="background:${c}"></span>`; }
+
+function rowQueued(j, i){
+  const short = (j.chars!=null && j.chars>0 && j.chars<SHORT_WARN);
+  return `<div class="row">
+    <span class="lead"><span class="num">${i+1}</span></span>
+    <span class="chan">${esc(j.channel_id||'—')}</span>
+    <span class="title" title="${esc(j.working_title||'')}">${esc(j.working_title||j.slug||j.job_id)}</span>
+    <span class="col seg">${j.segments??'—'}</span>
+    <span class="col chars ${short?'short':''}">${fmtChars(j.chars)}${short?' ⚠':''}</span>
+    <span class="acts">
+      <button class="btn redo" onclick="redo('${j.job_id}',this)">Redo</button>
+      <button class="btn danger" onclick="del('${j.job_id}',this)">Delete</button>
+    </span>
+  </div>`;
+}
+function rowRunning(j){
+  const short = (j.chars!=null && j.chars>0 && j.chars<SHORT_WARN);
+  return `<div class="row run">
+    <span class="lead">${dot('var(--running)')}</span>
+    <span class="chan">${esc(j.channel_id||'—')}</span>
+    <span class="title" title="${esc(j.working_title||'')}">${esc(j.working_title||j.slug||j.job_id)}</span>
+    <span class="col seg">${j.segments??'—'}</span>
+    <span class="col chars ${short?'short':''}">${fmtChars(j.chars)}${short?' ⚠':''}</span>
+    <span class="stat-txt" style="color:var(--running)">rendering…</span>
+  </div>`;
+}
+async function load(){
+  let d; try{ d = await fetch('/queue-data',{cache:'no-store'}).then(r=>r.json()); }catch(e){ return; }
+  paused = !!(d.control && d.control.paused);
+  const jobs = d.jobs||[];
+  const running = jobs.filter(j=>j.status==='running');
+  const queued  = jobs.filter(j=>j.status==='queued');
+
+  document.getElementById('running').innerHTML = running.map(rowRunning).join('') || '<div class="empty">Nothing rendering right now.</div>';
+  document.getElementById('queued').innerHTML  = queued.map(rowQueued).join('')  || '<div class="empty">Queue is empty.</div>';
+  document.getElementById('qcount').textContent = queued.length ? queued.length+' waiting' : '';
+
+  document.getElementById('stat').innerHTML =
+    `<span class="pill">${dot('var(--running)')}<b>${running.length}</b>&nbsp;rendering</span>`+
+    `<span class="pill">${dot('var(--queued)')}<b>${queued.length}</b>&nbsp;queued</span>`+
+    `<span class="pill">${dot('var(--error)')}<b>${jobs.filter(j=>j.status==='error').length}</b>&nbsp;errored</span>`;
+
+  const pb=document.getElementById('pause');
+  pb.classList.toggle('paused',paused); pb.innerHTML = paused?'▶ Resume all':'⏸ Pause all';
+  document.getElementById('banner').classList.toggle('show',paused);
+}
+async function togglePause(){ await fetch(paused?'/dashboard-resume':'/dashboard-pause',{method:'POST'}); toast(paused?'Resumed':'Paused'); load(); }
+async function del(id,b){ if(!confirm('Delete this job? (Trello card untouched.)'))return; b.disabled=true; await fetch('/dashboard-delete/'+id,{method:'POST'}); toast('Deleted'); load(); }
+async function redo(id,b){ if(!confirm('Redo: delete and re-add the idea to its ideas-queue for a fresh remake?'))return; b.disabled=true; await fetch('/dashboard-redo/'+id,{method:'POST'}); toast('Queued for remake'); load(); }
+let tt; function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('show'); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('show'),2000); }
+load(); setInterval(load,3000);
+</script>
+</body>
+</html>

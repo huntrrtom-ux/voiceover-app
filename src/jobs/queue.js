@@ -53,6 +53,7 @@ async function process(jobId) {
             label: t.label,
             title: t.card_title || payload.working_title,
             description: t.description,
+            due: t.due,
           })
         );
         store.update(jobId, { trello_card_id: cardId });
@@ -118,6 +119,9 @@ async function process(jobId) {
             title: t.card_title || payload.working_title,
             description: t.description,
             thumbnailPrompt: t.thumbnail_prompt,
+            ebookComment: t.ebook_comment,
+            ebookUrl: t.ebook_url,
+            due: t.due,
             filePath: finalPath,
             fileName: finalName,
           })
@@ -150,16 +154,38 @@ async function process(jobId) {
 async function drain() {
   if (running) return;
   running = true;
-  while (pending.length) {
+  // Stop pulling NEW jobs while production is paused. A job already running finishes; the rest
+  // wait in `pending` (and in the store as status:queued) until resume() kicks the drain again.
+  while (pending.length && !store.getControl().paused) {
     const id = pending.shift();
+    const job = store.get(id);
+    if (!job || job.status === 'deleted') continue; // cancelled while queued
     await process(id);
   }
   running = false;
 }
 
 function enqueue(jobId) {
-  pending.push(jobId);
+  if (!pending.includes(jobId)) pending.push(jobId);
   setImmediate(drain);
 }
 
-module.exports = { enqueue, process };
+// Remove a still-queued job from the in-memory queue (used when it's deleted/redone before it runs).
+function cancel(jobId) {
+  const i = pending.indexOf(jobId);
+  if (i !== -1) pending.splice(i, 1);
+}
+
+// Called after unpausing to restart processing.
+function resume() {
+  setImmediate(drain);
+}
+
+// On startup, re-enqueue anything left queued in the store (survives a restart). Honors pause.
+function recover() {
+  for (const j of store.list()) {
+    if (j.status === 'queued') enqueue(j.job_id);
+  }
+}
+
+module.exports = { enqueue, process, cancel, resume, recover, isPaused: () => store.getControl().paused };
