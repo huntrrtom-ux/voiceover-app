@@ -32,6 +32,48 @@ function sanitizeFilename(name) {
   return String(name).replace(/[^\w\- .]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 180);
 }
 
+// Split a chapter's text into roughly-equal chunks at sentence boundaries, for re-rolling a flagged
+// chapter as several smaller TTS requests. Returns [text] when it can't be meaningfully split.
+function splitText(text, k) {
+  const src = String(text);
+  const sentences = src.match(/[^.!?]+[.!?]+\s*|[^.!?]+$/g) || [src];
+  if (sentences.length < 2 || k < 2) return [src];
+  const target = src.length / k;
+  const buckets = [];
+  let cur = '';
+  for (const s of sentences) {
+    cur += s;
+    if (cur.length >= target && buckets.length < k - 1) { buckets.push(cur); cur = ''; }
+  }
+  if (cur.trim()) buckets.push(cur);
+  return buckets.filter((b) => b.trim().length);
+}
+
+// Re-roll a flagged chapter by re-synthesizing it SPLIT into `parts` smaller chunks, then stitching
+// the chunks back into the chapter's file. A long single TTS request is what makes 69labs render a
+// chapter quiet, and it does so deterministically — re-rolling the identical whole text reproduces
+// the same drop. Splitting changes the inputs and almost always breaks the quiet render, with NO
+// level changes. `synth(seg, outPath)` is the job's segment synthesizer.
+async function regenerateSplit(jobId, seg, workDir, parts, synth) {
+  const chunks = splitText(seg.text, parts);
+  if (chunks.length < 2) {
+    // Unsplittable (e.g. one very long sentence) — fall back to a plain full re-synth.
+    await withRetry(jobId, 'tts-regen[' + seg.kind + '#' + seg.index + ']', () => synth(seg, seg.file));
+    return;
+  }
+  const partFiles = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const pf = path.join(workDir, String(seg.index).padStart(3, '0') + '-' + seg.kind + '.part' + i + '.mp3');
+    const chunkSeg = { text: chunks[i], kind: seg.kind, index: seg.index };
+    await withRetry(jobId, `tts-regen[${seg.kind}#${seg.index}.p${i}]`, () => synth(chunkSeg, pf));
+    // Tiny sentence-gap between chunks (not a level change) so the chapter plays as one piece.
+    partFiles.push({ file: pf, kind: seg.kind, pause_before: i === 0 ? undefined : 0.12 });
+  }
+  await withRetry(jobId, `regen-concat[${seg.kind}#${seg.index}]`, () =>
+    stitch({ segments: partFiles, pauses: {}, outPath: seg.file })
+  );
+}
+
 async function process(jobId) {
   const job = store.get(jobId);
   if (!job) return;
@@ -130,11 +172,14 @@ async function process(jobId) {
             break;
           }
 
-          // Regenerate each flagged chapter in place, then re-analyze on the next round.
+          // Re-roll each flagged chapter SPLIT into smaller chunks (more each round: 2, then 3...).
+          // Splitting changes the TTS inputs, which breaks 69labs' deterministic quiet render without
+          // touching levels. Then re-analyze on the next round.
+          const parts = round + 2;
           for (const f of flagged) {
             const seg = segmentFiles[f.index];
-            store.log(jobId, `loudness: ${seg.kind} #${seg.index} has a ${Math.round(f.runSeconds)}s quiet stretch (~${Math.round(f.belowBy * 10) / 10}dB below typical) — regenerating`);
-            await withRetry(jobId, 'tts-regen[' + seg.kind + '#' + seg.index + ']', () => synthSegment(seg, seg.file));
+            store.log(jobId, `loudness: ${seg.kind} #${seg.index} has a ${Math.round(f.runSeconds)}s quiet stretch (~${Math.round(f.belowBy * 10) / 10}dB below typical) — re-rolling split into ${parts} parts`);
+            await regenerateSplit(jobId, seg, workDir, parts, synthSegment);
           }
         }
       } catch (qcErr) {
