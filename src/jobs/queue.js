@@ -9,6 +9,7 @@ const config = require('../config');
 const store = require('./store');
 const { getProvider } = require('../tts');
 const { stitch } = require('../audio/stitch');
+const loudness = require('../audio/loudness');
 const trello = require('../trello/client');
 
 let running = false;
@@ -73,24 +74,74 @@ async function process(jobId) {
   fs.mkdirSync(workDir, { recursive: true });
 
   try {
+    // A segment's TTS call, reused for the initial synth and for QC regeneration.
+    const synthSegment = (seg, outPath) =>
+      provider.synthesize({
+        text: seg.text,
+        voiceId: payload.voice_id,
+        model: payload.model,
+        voiceProvider: payload.voice_provider,
+        voiceCloneId: payload.voice_clone_id,
+        voiceSettings: payload.voice_settings,
+        minimaxSettings: payload.minimax_settings,
+        outPath,
+      });
+
     // 1) Synthesize each segment (retry per segment).
     const segmentFiles = [];
     for (const seg of payload.segments) {
       const outPath = path.join(workDir, String(seg.index).padStart(3, '0') + '-' + seg.kind + '.mp3');
-      await withRetry(jobId, 'tts[' + seg.kind + '#' + seg.index + ']', () =>
-        provider.synthesize({
-          text: seg.text,
-          voiceId: payload.voice_id,
-          model: payload.model,
-          voiceProvider: payload.voice_provider,
-          voiceCloneId: payload.voice_clone_id,
-          voiceSettings: payload.voice_settings,
-          minimaxSettings: payload.minimax_settings,
-          outPath,
-        })
-      );
+      await withRetry(jobId, 'tts[' + seg.kind + '#' + seg.index + ']', () => synthSegment(seg, outPath));
       segmentFiles.push(Object.assign({}, seg, { file: outPath }));
       store.log(jobId, 'synthesized ' + seg.kind + ' #' + seg.index);
+    }
+
+    // 1.5) Loudness QC: find any chapter with a sustained quiet stretch and regenerate ONLY that
+    // chapter (up to maxRegenRounds). Detection-only; we never touch levels. Fail-open — a QC error
+    // must never fail the job. Anything still quiet after the regen budget ships with a warning.
+    let loudnessWarnings = [];
+    if (config.loudnessCheck.enabled) {
+      try {
+        const lc = config.loudnessCheck;
+        for (let round = 0; round <= lc.maxRegenRounds; round++) {
+          const profiles = await Promise.all(segmentFiles.map((s) => loudness.profileSegment(s.file)));
+          const results = loudness.detectDrops(profiles, lc);
+          const flagged = results.filter((r) => r.flagged);
+          if (!flagged.length) { loudnessWarnings = []; break; }
+
+          if (round === lc.maxRegenRounds) {
+            // Out of regen budget: record warnings with absolute timestamps in the final track.
+            const durations = profiles.map((p) => p.duration);
+            const offs = loudness.segmentOffsets(segmentFiles, durations, payload.pauses || {});
+            loudnessWarnings = flagged.map((f) => {
+              const seg = segmentFiles[f.index];
+              return {
+                index: seg.index,
+                chapter: seg.kind + ' #' + seg.index,
+                start_hms: loudness.hms(offs[f.index] + f.worstStart),
+                end_hms: loudness.hms(offs[f.index] + f.worstEnd),
+                run_seconds: Math.round(f.runSeconds),
+                below_db: Math.round(f.belowBy * 10) / 10,
+              };
+            });
+            loudnessWarnings.forEach((w) =>
+              store.log(jobId, `loudness: ${w.chapter} still ~${w.below_db}dB low for ${w.run_seconds}s at ${w.start_hms}-${w.end_hms} after ${lc.maxRegenRounds} regens — shipping with warning`)
+            );
+            break;
+          }
+
+          // Regenerate each flagged chapter in place, then re-analyze on the next round.
+          for (const f of flagged) {
+            const seg = segmentFiles[f.index];
+            store.log(jobId, `loudness: ${seg.kind} #${seg.index} has a ${Math.round(f.runSeconds)}s quiet stretch (~${Math.round(f.belowBy * 10) / 10}dB below typical) — regenerating`);
+            await withRetry(jobId, 'tts-regen[' + seg.kind + '#' + seg.index + ']', () => synthSegment(seg, seg.file));
+          }
+        }
+      } catch (qcErr) {
+        store.log(jobId, 'loudness QC skipped (error): ' + qcErr.message);
+        loudnessWarnings = [];
+      }
+      store.update(jobId, { loudness_warnings: loudnessWarnings });
     }
 
     // 2) Stitch with pauses (retry).
@@ -128,6 +179,16 @@ async function process(jobId) {
         );
         store.update(jobId, { trello_attached: true, trello_card_id: cardId });
         store.log(jobId, 'placed on Trello card ' + cardId);
+        // If a quiet stretch survived regeneration, leave a heads-up comment so the editor can
+        // check that spot. Best-effort — never fails the job.
+        if (loudnessWarnings.length) {
+          const lines = loudnessWarnings
+            .map((w) => `• ${w.chapter}: ~${w.start_hms}-${w.end_hms} (~${w.below_db}dB below the rest, ${w.run_seconds}s)`)
+            .join('\n');
+          await trello
+            .addComment(cardId, `Audio QC — possible quiet stretch(es) worth a manual listen:\n${lines}`)
+            .catch((e) => store.log(jobId, 'loudness note comment failed: ' + e.message));
+        }
       }
     } else if (payload.trello_card_id) {
       if (!config.trello.enabled) {
