@@ -120,6 +120,7 @@ function publicView(job) {
     trello_card_id: job.payload?.trello_card_id || null,
     trello_attached: job.trello_attached,
     error: job.error,
+    loudness_warnings: job.loudness_warnings || [],
     log: job.log,
   };
 }
