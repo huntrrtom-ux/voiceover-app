@@ -30,6 +30,19 @@ const config = {
 
   // How many times each stage (tts per segment, stitch, trello) is retried before flagging.
   maxRetries: 3,
+
+  // Audio QC: catch a sustained quiet stretch inside a chapter (a TTS "volume drop-off" artifact)
+  // and regenerate just that chapter. Detection only — levels are never altered. Balanced defaults:
+  // flag a >=20s run sitting >=9 dB below the track's typical loudness; regenerate up to 2 rounds;
+  // if a drop still survives, ship anyway with a warning (note on the card + job log + timestamp).
+  loudnessCheck: {
+    enabled: (process.env.LOUDNESS_CHECK || 'on').toLowerCase() !== 'off',
+    dropDb: parseFloat(process.env.LOUDNESS_DROP_DB) || 9,          // dB below typical = "serious"
+    minDropSeconds: parseInt(process.env.LOUDNESS_MIN_SECONDS, 10) || 20,
+    maxRegenRounds: parseInt(process.env.LOUDNESS_MAX_ROUNDS, 10) || 2,
+    warmupSeconds: 3,        // short-term loudness needs 3s to become valid; ignore each seg's start
+    silenceFloor: -70,       // exclude digital silence from the "typical level" median
+  },
 };
 
 module.exports = config;
