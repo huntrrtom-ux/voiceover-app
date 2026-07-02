@@ -20,6 +20,16 @@ const config = {
     defaultModel: process.env.SIXTYNINELABS_DEFAULT_MODEL || '',
   },
 
+  // NavyAI TTS (unlimited ElevenLabs). Synchronous POST /v1/audio/speech. Select it with
+  // TTS_PROVIDER=navyai. Uses each channel's existing ElevenLabs voice_id unchanged. ElevenLabs
+  // caps input at 4096 chars, so the provider chunks longer chapters to maxInputChars internally.
+  navyai: {
+    baseUrl: process.env.NAVYAI_BASE_URL || 'https://api.navy',
+    apiKey: process.env.NAVYAI_API_KEY || '',
+    defaultModel: process.env.NAVYAI_DEFAULT_MODEL || 'eleven_v3',
+    maxInputChars: parseInt(process.env.NAVYAI_MAX_INPUT_CHARS, 10) || 3800,
+  },
+
   trello: {
     key: process.env.TRELLO_KEY || '',
     token: process.env.TRELLO_TOKEN || '',
