@@ -9,8 +9,18 @@
 // that typical level. Short-term (3s) smoothing means normal sentence pauses never trip it — only a
 // genuine, sustained drop does.
 
+const fs = require('fs');
 const { execFile } = require('child_process');
 const FFMPEG = require('./ffmpegPath');
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    execFile(FFMPEG, args, { maxBuffer: 1024 * 1024 * 64 }, (err, _o, stderr) => {
+      if (err) return reject(new Error(stderr ? String(stderr).split('\n').slice(-3).join(' ') : err.message));
+      resolve();
+    });
+  });
+}
 
 // Profile one audio file: returns { file, samples:[{t,s}], duration }. s = short-term LUFS.
 // Never rejects — a QC read failure must not fail the job (caller treats empty samples as "clean").
@@ -138,4 +148,27 @@ function hms(sec) {
   return (h ? h + ':' + pad(m, 2) : m) + ':' + pad(ss, 2);
 }
 
-module.exports = { profileSegment, detectDrops, segmentOffsets, hms, median };
+// Lift a quiet window [start, end] (seconds) inside an audio file by `gainDb`, with a short ramp at
+// each edge so there is no audible volume step. Rewrites `file` in place. This is the ONE place the
+// pipeline changes levels, and only on a sustained drop that regeneration could not clear — the goal
+// is to bring the dip up to the rest of the file, so the video is internally consistent.
+async function levelWindow(file, start, end, gainDb, opts = {}) {
+  const R = Number(opts.rampSeconds ?? 0.6);
+  const Gf = Math.pow(10, Number(gainDb) / 20);           // dB -> linear amplitude factor
+  const S = Math.max(0, Number(start));
+  const E = Math.max(S, Number(end));
+  const s0 = (S - R).toFixed(3);
+  const e1 = (E + R).toFixed(3);
+  const r = R.toFixed(3);
+  const g = Gf.toFixed(5);
+  // Trapezoidal envelope: 1.0 outside [S-R, E+R], ramps up to Gf across R, holds Gf across [S, E].
+  // ffmpeg's min/max take exactly two args, so they're nested. Commas are escaped (\,) so ffmpeg
+  // doesn't read them as filter separators.
+  const env = `max(0\\,min(1\\,min((t-(${s0}))/${r}\\,((${e1})-t)/${r})))`;
+  const expr = `1+(${g}-1)*${env}`;
+  const tmp = file + '.lvl.mp3';
+  await runFfmpeg(['-y', '-i', file, '-af', `volume=eval=frame:volume=${expr}`, '-c:a', 'libmp3lame', '-q:a', '2', tmp]);
+  fs.renameSync(tmp, file);
+}
+
+module.exports = { profileSegment, detectDrops, segmentOffsets, hms, median, levelWindow };
