@@ -26,7 +26,7 @@ const config = {
   navyai: {
     baseUrl: process.env.NAVYAI_BASE_URL || 'https://api.navy',
     apiKey: process.env.NAVYAI_API_KEY || '',
-    defaultModel: process.env.NAVYAI_DEFAULT_MODEL || 'eleven_v3',
+    defaultModel: process.env.NAVYAI_DEFAULT_MODEL || 'eleven_multilingual_v2',
     maxInputChars: parseInt(process.env.NAVYAI_MAX_INPUT_CHARS, 10) || 3800,
   },
 
