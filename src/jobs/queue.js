@@ -10,6 +10,7 @@ const store = require('./store');
 const { getProvider } = require('../tts');
 const { stitch } = require('../audio/stitch');
 const loudness = require('../audio/loudness');
+const tempo = require('../audio/tempo');
 const trello = require('../trello/client');
 
 let running = false;
@@ -116,9 +117,12 @@ async function process(jobId) {
   fs.mkdirSync(workDir, { recursive: true });
 
   try {
-    // A segment's TTS call, reused for the initial synth and for QC regeneration.
-    const synthSegment = (seg, outPath) =>
-      provider.synthesize({
+    // A segment's TTS call, reused for the initial synth and for QC regeneration. After synthesis the
+    // channel's `speech_rate` is applied as a pitch-preserving time-stretch (the TTS API has no speed
+    // parameter for ElevenLabs voices). Only the speech is re-timed — pauses are added later by the
+    // stitcher at their exact configured lengths. Fail-open: a pacing error never fails the job.
+    const synthSegment = async (seg, outPath) => {
+      await provider.synthesize({
         text: seg.text,
         voiceId: payload.voice_id,
         model: payload.model,
@@ -128,6 +132,12 @@ async function process(jobId) {
         minimaxSettings: payload.minimax_settings,
         outPath,
       });
+      try {
+        await tempo.retime(outPath, payload.speech_rate);
+      } catch (e) {
+        store.log(jobId, 'speech_rate re-time failed (kept original pacing): ' + e.message);
+      }
+    };
 
     // 1) Synthesize each segment (retry per segment).
     const segmentFiles = [];
@@ -138,10 +148,11 @@ async function process(jobId) {
       store.log(jobId, 'synthesized ' + seg.kind + ' #' + seg.index);
     }
 
-    // 1.5) Loudness QC: find any chapter with a sustained quiet stretch and regenerate ONLY that
-    // chapter (up to maxRegenRounds). Detection-only; we never touch levels. Fail-open — a QC error
-    // must never fail the job. Anything still quiet after the regen budget ships with a warning.
-    let loudnessWarnings = [];
+    // 1.5) Loudness QC: find any chapter with a sustained quiet stretch and re-roll ONLY that chapter
+    // (split into smaller pieces, up to maxRegenRounds — no level change). If a drop still survives,
+    // lift just that quiet stretch up to the file's OWN typical loudness so the video is internally
+    // consistent (measured per file, so each voice keeps its natural level). Fail-open — QC never
+    // fails the job.
     if (config.loudnessCheck.enabled) {
       try {
         const lc = config.loudnessCheck;
@@ -149,32 +160,27 @@ async function process(jobId) {
           const profiles = await Promise.all(segmentFiles.map((s) => loudness.profileSegment(s.file)));
           const results = loudness.detectDrops(profiles, lc);
           const flagged = results.filter((r) => r.flagged);
-          if (!flagged.length) { loudnessWarnings = []; break; }
+          if (!flagged.length) break;
 
           if (round === lc.maxRegenRounds) {
-            // Out of regen budget: record warnings with absolute timestamps in the final track.
-            const durations = profiles.map((p) => p.duration);
-            const offs = loudness.segmentOffsets(segmentFiles, durations, payload.pauses || {});
-            loudnessWarnings = flagged.map((f) => {
+            // Regen budget spent: LIFT each surviving quiet stretch to the file's own typical level.
+            // This is the ONLY place the pipeline changes levels, and only on a drop re-rolls missed.
+            for (const f of flagged) {
               const seg = segmentFiles[f.index];
-              return {
-                index: seg.index,
-                chapter: seg.kind + ' #' + seg.index,
-                start_hms: loudness.hms(offs[f.index] + f.worstStart),
-                end_hms: loudness.hms(offs[f.index] + f.worstEnd),
-                run_seconds: Math.round(f.runSeconds),
-                below_db: Math.round(f.belowBy * 10) / 10,
-              };
-            });
-            loudnessWarnings.forEach((w) =>
-              store.log(jobId, `loudness: ${w.chapter} still ~${w.below_db}dB low for ${w.run_seconds}s at ${w.start_hms}-${w.end_hms} after ${lc.maxRegenRounds} regens — shipping with warning`)
-            );
+              const gainDb = Math.min(f.belowBy, lc.maxLiftDb);
+              try {
+                await loudness.levelWindow(seg.file, f.worstStart, f.worstEnd, gainDb, lc);
+                store.log(jobId, `loudness: ${seg.kind} #${seg.index} still ~${Math.round(f.belowBy * 10) / 10}dB low after ${lc.maxRegenRounds} re-rolls — lifted its ${Math.round(f.runSeconds)}s quiet stretch by +${Math.round(gainDb * 10) / 10}dB to match the rest of the video`);
+              } catch (le) {
+                store.log(jobId, `loudness: could not lift ${seg.kind} #${seg.index}: ${le.message}`);
+              }
+            }
             break;
           }
 
           // Re-roll each flagged chapter SPLIT into smaller chunks (more each round: 2, then 3...).
-          // Splitting changes the TTS inputs, which breaks 69labs' deterministic quiet render without
-          // touching levels. Then re-analyze on the next round.
+          // Splitting changes the TTS inputs, which breaks the deterministic quiet render — no level
+          // change. Then re-analyze on the next round.
           const parts = round + 2;
           for (const f of flagged) {
             const seg = segmentFiles[f.index];
@@ -184,9 +190,7 @@ async function process(jobId) {
         }
       } catch (qcErr) {
         store.log(jobId, 'loudness QC skipped (error): ' + qcErr.message);
-        loudnessWarnings = [];
       }
-      store.update(jobId, { loudness_warnings: loudnessWarnings });
     }
 
     // 2) Stitch with pauses (retry).
@@ -224,16 +228,6 @@ async function process(jobId) {
         );
         store.update(jobId, { trello_attached: true, trello_card_id: cardId });
         store.log(jobId, 'placed on Trello card ' + cardId);
-        // If a quiet stretch survived regeneration, leave a heads-up comment so the editor can
-        // check that spot. Best-effort — never fails the job.
-        if (loudnessWarnings.length) {
-          const lines = loudnessWarnings
-            .map((w) => `• ${w.chapter}: ~${w.start_hms}-${w.end_hms} (~${w.below_db}dB below the rest, ${w.run_seconds}s)`)
-            .join('\n');
-          await trello
-            .addComment(cardId, `Audio QC — possible quiet stretch(es) worth a manual listen:\n${lines}`)
-            .catch((e) => store.log(jobId, 'loudness note comment failed: ' + e.message));
-        }
       }
     } else if (payload.trello_card_id) {
       if (!config.trello.enabled) {
