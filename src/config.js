@@ -45,12 +45,14 @@ const config = {
   // first by regenerating that chapter split into smaller pieces (no level change). If a drop still
   // survives the regen budget, LIFT just that quiet stretch up to the file's OWN typical loudness so
   // the video is internally consistent — measured per file, so each voice keeps its natural level.
-  // Balanced defaults: flag a >=20s run sitting >=9 dB below typical; regenerate up to 2 rounds; then
-  // level the remainder. No Trello note (the editor can't act on the audio at that point).
+  // Defaults (rev. 22 Jul 2026): flag a >=6s run sitting >=9 dB below typical; regenerate up to
+  // 2 rounds; then level the remainder. The old 20s floor is WHY short drops shipped — a 3–5s
+  // dead patch never tripped it (~1 in 10 videos reached the editor with an audible drop). 6s
+  // still clears normal dramatic pauses by a wide margin. Override with LOUDNESS_MIN_SECONDS.
   loudnessCheck: {
     enabled: (process.env.LOUDNESS_CHECK || 'on').toLowerCase() !== 'off',
     dropDb: parseFloat(process.env.LOUDNESS_DROP_DB) || 9,          // dB below typical = "serious"
-    minDropSeconds: parseInt(process.env.LOUDNESS_MIN_SECONDS, 10) || 20,
+    minDropSeconds: parseInt(process.env.LOUDNESS_MIN_SECONDS, 10) || 6,
     maxRegenRounds: parseInt(process.env.LOUDNESS_MAX_ROUNDS, 10) || 2,
     maxLiftDb: parseFloat(process.env.LOUDNESS_MAX_LIFT_DB) || 24,  // safety cap on the volume lift
     rampSeconds: 0.6,        // fade the lift in/out at the window edges so there's no audible step

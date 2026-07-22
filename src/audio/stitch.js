@@ -2,15 +2,32 @@
 // Stitch ordered segments into one mp3, inserting a pause before each segment after the first.
 // Pause length depends on the boundary: after the hook => pauses.after_hook; between chapters
 // => pauses.between_chapters. Uses ffmpeg's concat filter with per-input normalization, so it
-// works no matter what format each segment came back in (mock mp3 today, 69labs audio later).
+// works no matter what format each segment came back in.
+//
+// CHUNKED STITCHING (22 Jul 2026): one giant ffmpeg invocation breaks at high input counts —
+// a 62-segment job (62 files + 61 silence gaps = 123 inputs in one filtergraph) made libmp3lame
+// fail with EINVAL at encoder init, reproducibly, while 17–21 segment jobs were fine. So above
+// MAX_INPUTS_PER_PASS the plan is stitched in groups: each group -> a lossless WAV intermediate
+// (identical params: 44.1kHz mono s16), then the few intermediates are concatenated and encoded
+// to mp3 ONCE. Same output quality as before (single mp3 encode), any segment count.
 
+const fs = require('fs');
 const { execFile } = require('child_process');
 const FFMPEG = require('./ffmpegPath');
 
-function runFfmpeg(args) {
+// Highest input count per ffmpeg invocation. 21-segment jobs (43 inputs) are proven fine in
+// production; 123 inputs is proven broken. 28 keeps every pass well inside proven territory.
+const MAX_INPUTS_PER_PASS = 28;
+
+function runFfmpeg(args, label) {
   return new Promise((resolve, reject) => {
     execFile(FFMPEG, args, { maxBuffer: 1024 * 1024 * 64 }, (err, _stdout, stderr) => {
-      if (err) return reject(new Error(stderr ? stderr.split('\n').slice(-4).join(' ') : err.message));
+      if (err) {
+        const tail = stderr ? stderr.split('\n').slice(-4).join(' ') : err.message;
+        // Include what we asked ffmpeg to do — without this, stitch failures are undebuggable.
+        const preview = args.join(' ').slice(0, 400);
+        return reject(new Error(`${label || 'ffmpeg'}: ${tail} | cmd: ffmpeg ${preview}…`));
+      }
       resolve();
     });
   });
@@ -41,16 +58,14 @@ function buildPlan(segments, pauses) {
   return plan;
 }
 
-async function stitch({ segments, pauses = {}, outPath }) {
-  if (!segments || !segments.length) throw new Error('stitch: no segments');
-
-  const plan = buildPlan(segments, pauses);
-
+// One ffmpeg pass over a slice of the plan. `codecArgs` decides the output format:
+// lossless WAV for intermediates, libmp3lame for the final file.
+async function stitchPass(planSlice, outPath, codecArgs, label) {
   const inputArgs = [];
   const filterParts = [];
   const concatLabels = [];
 
-  plan.forEach((item, idx) => {
+  planSlice.forEach((item, idx) => {
     if (item.type === 'file') {
       inputArgs.push('-i', item.path);
     } else {
@@ -65,20 +80,53 @@ async function stitch({ segments, pauses = {}, outPath }) {
     filterParts.join(';') +
     ';' +
     concatLabels.join('') +
-    `concat=n=${plan.length}:v=0:a=1[out]`;
+    `concat=n=${planSlice.length}:v=0:a=1[out]`;
 
-  const args = [
-    '-y',
-    ...inputArgs,
-    '-filter_complex', filter,
-    '-map', '[out]',
-    '-c:a', 'libmp3lame',
-    '-q:a', '2',
-    outPath,
-  ];
-
-  await runFfmpeg(args);
+  const args = ['-y', ...inputArgs, '-filter_complex', filter, '-map', '[out]', ...codecArgs, outPath];
+  await runFfmpeg(args, label);
   return outPath;
+}
+
+const MP3_ARGS = ['-c:a', 'libmp3lame', '-q:a', '2'];
+const WAV_ARGS = ['-c:a', 'pcm_s16le', '-ar', '44100', '-ac', '1'];
+
+async function stitch({ segments, pauses = {}, outPath }) {
+  if (!segments || !segments.length) throw new Error('stitch: no segments');
+
+  const plan = buildPlan(segments, pauses);
+
+  // Small jobs: single pass straight to mp3, exactly as before.
+  if (plan.length <= MAX_INPUTS_PER_PASS) {
+    return stitchPass(plan, outPath, MP3_ARGS, 'stitch');
+  }
+
+  // Big jobs: group the plan, render each group to a lossless WAV intermediate, then join the
+  // intermediates and encode mp3 once. Group boundaries preserve order exactly, so pauses that
+  // land at a boundary still play at their configured length.
+  const groups = [];
+  for (let i = 0; i < plan.length; i += MAX_INPUTS_PER_PASS) {
+    groups.push(plan.slice(i, i + MAX_INPUTS_PER_PASS));
+  }
+  if (groups.length > MAX_INPUTS_PER_PASS) {
+    // ~780+ inputs (≈390 segments) — far beyond anything real; refuse loudly rather than guess.
+    throw new Error(`stitch: plan of ${plan.length} inputs exceeds two-level chunking capacity`);
+  }
+
+  const intermediates = [];
+  try {
+    for (let g = 0; g < groups.length; g++) {
+      const part = `${outPath}.group${String(g).padStart(2, '0')}.wav`;
+      await stitchPass(groups[g], part, WAV_ARGS, `stitch-group ${g + 1}/${groups.length}`);
+      intermediates.push(part);
+    }
+    const finalPlan = intermediates.map((p) => ({ type: 'file', path: p }));
+    await stitchPass(finalPlan, outPath, MP3_ARGS, 'stitch-final');
+    return outPath;
+  } finally {
+    for (const p of intermediates) {
+      try { fs.rmSync(p, { force: true }); } catch {}
+    }
+  }
 }
 
 module.exports = { stitch, buildPlan };

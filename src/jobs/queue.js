@@ -140,12 +140,22 @@ async function process(jobId) {
     };
 
     // 1) Synthesize each segment (retry per segment).
+    // SEGMENT CACHE (22 Jul 2026): /retry keeps the same job id and workDir, so segments that
+    // already synthesized on a previous run are reused instead of re-billed. This makes a retry
+    // after a stitch/trello failure effectively stitch-only — TTS is the expensive stage and it
+    // is never repeated for a failure that happened after it.
     const segmentFiles = [];
     for (const seg of payload.segments) {
       const outPath = path.join(workDir, String(seg.index).padStart(3, '0') + '-' + seg.kind + '.mp3');
-      await withRetry(jobId, 'tts[' + seg.kind + '#' + seg.index + ']', () => synthSegment(seg, outPath));
+      let cached = false;
+      try { cached = fs.statSync(outPath).size > 4096; } catch {}
+      if (cached) {
+        store.log(jobId, 'reusing cached ' + seg.kind + ' #' + seg.index + ' from previous run');
+      } else {
+        await withRetry(jobId, 'tts[' + seg.kind + '#' + seg.index + ']', () => synthSegment(seg, outPath));
+        store.log(jobId, 'synthesized ' + seg.kind + ' #' + seg.index);
+      }
       segmentFiles.push(Object.assign({}, seg, { file: outPath }));
-      store.log(jobId, 'synthesized ' + seg.kind + ' #' + seg.index);
     }
 
     // 1.5) Loudness QC: find any chapter with a sustained quiet stretch and re-roll ONLY that chapter
